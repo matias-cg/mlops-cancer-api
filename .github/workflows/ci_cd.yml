@@ -1,0 +1,97 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 1. Checkout del código
+      uses: actions/checkout@v4
+      
+    - name: 2. Construir la Imagen Docker
+      run: docker build -t cancer-prediction-api:test .
+
+    - name: 3. Ejecutar el Contenedor Docker para Pruebas
+      run: docker run -d -p 5000:5000 --name api_test_container cancer-prediction-api:test
+      
+    - name: 4. Esperar a que la API esté lista (Robustez CI)
+      # Tiempo de espera aumentado para garantizar que Gunicorn inicie completamente.
+      run: sleep 15 
+      
+    - name: 5. Prueba de Endpoint GET / (Estado del Servicio - 200)
+      # Verifica que el servicio esté corriendo y responda 200/OK
+      run: |
+        echo "Corriendo prueba GET /"
+        STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/)
+        if [ "$STATUS_CODE" -ne 200 ]; then
+          echo "ERROR [CI]: La ruta GET / retornó código $STATUS_CODE. Esperado 200."
+          exit 1
+        fi
+        echo "GET / exitoso (Código $STATUS_CODE)"
+
+    - name: 6. Prueba de Endpoint POST /predict (Predicción Exitosa - 200)
+      # Simula una petición de predicción con datos válidos utilizando el JSON real del modelo entrenado.
+      run: |
+        echo "Corriendo prueba POST /predict (Caso Exitoso)"
+        RESPONSE=$(curl -s -X POST http://localhost:5000/predict \
+            -H "Content-Type: application/json" \
+            -d '{
+                "mean radius": 12.47,
+                "mean texture": 18.6,
+                "mean perimeter": 81.09,
+                "mean area": 481.9,
+                "mean smoothness": 0.09965,
+                "worst radius": 14.97,
+                "worst texture": 24.64,
+                "worst perimeter": 96.05,
+                "worst area": 677.9,
+                "worst smoothness": 0.1426
+            }')
+        
+        # Validación: Asegura que la respuesta contiene la clave 'prediction_code' y es JSON válido
+        if ! echo "$RESPONSE" | grep -q "prediction_code"; then
+          echo "ERROR [CI]: La respuesta de /predict no es válida o falló. Respuesta: $RESPONSE"
+          exit 1
+        fi
+        echo "POST /predict exitoso. Respuesta incluye el diagnóstico."
+
+    - name: 7. Prueba de Endpoint POST /predict (Manejo de Error 400)
+      # Simula un fallo de validación (datos incompletos) y espera un código de error 400
+      run: |
+        echo "Corriendo prueba POST /predict (Caso Error 400 - Validación de Esquema)"
+        STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:5000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"mean radius": 14.0, "mean texture": 15.0}') # Faltan muchas características
+        
+        if [ "$STATUS_CODE" -ne 400 ]; then
+          echo "ERROR [CI]: La prueba de validación retornó código $STATUS_CODE. Esperado 400 (Bad Request)."
+          exit 1
+        fi
+        echo "POST /predict - Manejo de errores 400 exitoso."
+
+    - name: 8. Limpiar Contenedor de Pruebas
+      if: always()
+      run: docker rm -f api_test_container
+      
+    - name: 9. Etiquetado y Simulación de Push a Registro (Práctica MLOps Profesional)
+      # Etiqueta la imagen con el SHA del commit para un versionado único y trazable.
+      run: |
+        IMAGE_NAME="your-docker-registry/cancer-api"
+        IMAGE_VERSION="${{ github.sha }}" # El SHA del commit es la versión
+        
+        echo "--- Simulación de Despliegue y Versionado ---"
+        echo "Imagen base: cancer-prediction-api:test"
+        echo "Etiquetando imagen para despliegue: ${IMAGE_NAME}:${IMAGE_VERSION}"
+        
+        docker tag cancer-prediction-api:test ${IMAGE_NAME}:${IMAGE_VERSION}
+        
+        echo "La imagen ha sido correctamente etiquetada. Un paso real de CD haría 'docker push ${IMAGE_NAME}:${IMAGE_VERSION}' aquí."
+        
